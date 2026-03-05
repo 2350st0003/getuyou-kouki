@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Twitterもどき</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h2>Twitterもどき</h2>
+        <a href="/logout.php" style="text-decoration: none;">
+            <button class="logout-btn">ログアウト</button>
+        </a>
+    </header>
+
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('follow')" id="tab-follow">フォロー中</div>
+        <div class="tab" onclick="switchTab('all')" id="tab-all">すべての投稿</div>
+    </div>
+    
+    <div class="post-area">
+        <div class="post-form">
+            <textarea id="post_body" placeholder="いまどうしてる？"></textarea>
+            
+            <div class="form-actions">
+                <div style="display:flex; align-items:center;">
+                    <label for="image_input" class="file-upload-label">
+                        画像を選択
+                    </label>
+                    <input type="file" id="image_input" accept="image/*" onchange="updateFileName()">
+                    <span id="file-name-display"></span>
+                </div>
+
+                <button class="submit-btn" onclick="submitPost()">ツイートする</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="timeline"></div>
+    
+    <div id="loading">読み込み中...</div>
+    <div id="no-more">すべての投稿を表示しました</div>
+</div>
+
+    <script>
+        // --- グローバル変数 ---
+        let currentMode = 'follow'; // 現在の表示タブ（'follow' または 'all'）
+        let currentOffset = 0;      // 現在読み込んでいる投稿の件数（無限スクロールのページネーション用）
+        let isLoading = false;      // 通信中かどうか（連打防止フラグ）
+        let hasMore = true;         // まだ読み込める投稿があるかどうかのフラグ
+        const LIMIT = 5;            // 一度に読み込む件数
+
+        // ページ読み込み完了時に、最初のタイムラインデータを取得
+        window.onload = () => loadTimeline(false);
+
+        // --- 無限スクロールの監視処理 ---
+        window.onscroll = () => {
+            if (!hasMore) return; // もうデータがないなら何もしない
+            
+            // 画面の一番下から100pxの位置までスクロールされたか計算
+            // (画面の高さ + スクロール量) >= (ページ全体の高さ - 100)
+            if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 100) {
+                // 現在ロード中でなければ、続きを読み込む
+                if (!isLoading) {
+                    loadTimeline(true); // true = 追加読み込みモード
+                }
+            }
+        };
+
+        // --- ファイル名表示処理 ---
+        // inputタグでファイルが選択された時に呼び出される
+        function updateFileName() {
+            const input = document.getElementById('image_input');
+            const display = document.getElementById('file-name-display');
+            // ファイルが存在すれば名前を表示、なければ空にする
+            if (input.files && input.files.length > 0) {
+                display.innerText = input.files[0].name;
+            } else {
+                display.innerText = "";
+            }
+        }
+
+        // --- タブ切り替え処理 ---
+        function switchTab(mode) {
+            currentMode = mode;
+            // CSSクラスを操作して、選択中のタブを強調表示（activeクラスの付け替え）
+            document.getElementById('tab-follow').classList.remove('active');
+            document.getElementById('tab-all').classList.remove('active');
+            document.getElementById('tab-' + mode).classList.add('active');
+            
+            // タイムラインをリセットして再読み込み (false = リセットモード)
+            loadTimeline(false);
+        }
+
+        // --- タイムライン読み込み処理（メイン機能） ---
+        // isAppend: trueなら下に追加（無限スクロール）、falseなら画面をクリアして最初から（タブ切り替え時など）
+        async function loadTimeline(isAppend) {
+            // 連打防止: すでに読み込み中なら中断
+            if (isLoading) return;
+            // 追加モードで、もうデータがない場合は中断
+            if (isAppend && !hasMore) return;
+
+            isLoading = true;
+            // ローディング表示を出す
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('no-more').style.display = 'none';
+
+            // リセットモード（初期読み込み）の場合、変数を初期化して画面をクリア
+            if (!isAppend) {
+                currentOffset = 0;
+                hasMore = true;
+                document.getElementById('timeline').innerHTML = '';
+            }
+
+            // モードに応じてAPIのエンドポイントを切り替え
+            const baseUrl = (currentMode === 'follow') ? '/timeline_json.php' : '/timeline_all_json.php';
+            // GETパラメータで取得位置（offset）と件数（limit）を渡す
+            const url = `${baseUrl}?limit=${LIMIT}&offset=${currentOffset}`;
+            
+            try {
+                // Fetch APIを使ってサーバーから非同期でデータを取得
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('Network error');
+                const data = await response.json(); // JSONとして解析
+
+                // 取得した件数がLIMIT（5件）より少なければ、次はもうデータがないと判断
+                if (data.entries.length < LIMIT) {
+                    hasMore = false;
+                }
+
+                const timelineDiv = document.getElementById('timeline');
+
+                // データが0件だった場合の処理
+                if (data.entries.length === 0) {
+                    if (!isAppend) { // 初期表示で0件の場合
+                        timelineDiv.innerHTML = '<div style="padding:40px 20px; text-align:center; color:#536471;">まだ投稿がありません。<br>「おすすめ」タブから投稿を探してみましょう。</div>';
+                        hasMore = false;
+                    }
+                } else {
+                    // 取得した投稿データを1件ずつHTMLに変換して追加
+                    data.entries.forEach(entry => {
+                        const div = document.createElement('div');
+                        div.className = 'entry';
+                        
+                        // 画像がある場合のHTML生成
+                        let imageHtml = '';
+                        if (entry.image_file_url) {
+                            imageHtml = `<img src="${entry.image_file_url}" class="entry-image" loading="lazy">`;
+                        }
+
+                        // フォローボタンの出し分けロジック
+                        let actionButton = '';
+                        if (entry.is_me) {
+                            actionButton = ''; // 自分ならボタンなし
+                        } else if (entry.is_following == 1) {
+                            actionButton = `<span class="followed-badge">フォロー中</span>`;
+                        } else {
+                            // 他人で未フォローならボタンを表示
+                            actionButton = `<button class="follow-btn" onclick="followUser(${entry.user_id})">フォロー</button>`;
+                        }
+
+                        // テンプレートリテラルを使ってHTMLを組み立てる
+                        div.innerHTML = `
+                            <div class="user-icon-placeholder"></div>
+                            <div class="entry-content">
+                                <div class="entry-header">
+                                    <span class="user-name">${entry.user_name}</span>
+                                    <div style="display:flex; align-items:center;">
+                                        <span class="timestamp">${entry.created_at}</span>
+                                        ${actionButton}
+                                    </div>
+                                </div>
+                                <div class="entry-body">${entry.body}</div>
+                                ${imageHtml}
+                            </div>
+                        `;
+                        // タイムラインに追加
+                        timelineDiv.appendChild(div);
+                    });
+
+                    // 読み込んだ件数分だけオフセットを進める
+                    currentOffset += data.entries.length;
+
+                    // 画面の高さが足りなくてスクロールバーが出ない場合、
+                    // 自動で次のページを読み込む（再帰呼び出し）
+                    if (hasMore && document.body.offsetHeight < window.innerHeight) {
+                        isLoading = false;
+                        await loadTimeline(true);
+                        return;
+                    }
+                }
+
+                // これ以上データがない場合の表示
+                if (!hasMore && currentOffset > 0) {
+                    document.getElementById('no-more').style.display = 'block';
+                }
+
+            } catch (e) {
+                console.error(e); // エラー時はコンソールにログ出力
+            } finally {
+                // 成功しても失敗しても、ローディング表示は消す
+                isLoading = false;
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        // --- フォロー処理 ---
+        async function followUser(targetUserId) {
+            const formData = new URLSearchParams();
+            formData.append('target_user_id', targetUserId);
+            // POSTメソッドでサーバーに送信
+            await fetch('/follow.php', { method: 'POST', body: formData });
+            // 画面をリロード（リセット読み込み）して状態を反映
+            loadTimeline(false);
+        }
+
+        // --- 投稿送信処理 ---
+        async function submitPost() {
+            const body = document.getElementById('post_body').value;
+            const file = document.getElementById('image_input').files[0];
+            
+            // 本文も画像もない場合は何もしない
+            if (!body && !file) return;
+
+            // 連打防止のためボタンを無効化
+            const btn = document.querySelector('.submit-btn');
+            btn.disabled = true;
+            btn.innerText = '送信中...';
+
+            // 画像がある場合、クライアント側でリサイズ処理を行う
+            let base64Image = null;
+            if (file) {
+                base64Image = await resizeImage(file, 800);
+            }
+
+            const formData = new URLSearchParams();
+            formData.append('body', body);
+            // 画像データがあれば追加
+            if (base64Image) formData.append('image_base64', base64Image);
+
+            // POST送信
+            await fetch('/post.php', { method: 'POST', body: formData });
+
+            // フォームの中身をクリア
+            document.getElementById('post_body').value = '';
+            document.getElementById('image_input').value = '';
+            document.getElementById('file-name-display').innerText = ''; // ファイル名表示もリセット
+            
+            // ボタンを元に戻してタイムラインを更新
+            btn.disabled = false;
+            btn.innerText = 'ツイートする';
+            loadTimeline(false);
+        }
+
+        // --- 画像リサイズ処理 (Canvas API) ---
+        // 大きな画像をブラウザ側で縮小してから送信することで、サーバー負荷と通信量を減らす
+        function resizeImage(file, maxWidth) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file); // ファイルを読み込む
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        // Canvas要素を作成して描画
+                        const canvas = document.createElement('canvas');
+                        let width = img.width;
+                        let height = img.height;
+                        // 指定幅より大きければ縮小計算
+                        if (width > maxWidth) {
+                            height = height * (maxWidth / width);
+                            width = maxWidth;
+                        }
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        // JPEG形式、品質0.8でBase64文字列として書き出す
+                        resolve(canvas.toDataURL('image/jpeg', 0.8));
+                    };
+                };
+            });
+        }
+    </script>
+</body>
+</html>
